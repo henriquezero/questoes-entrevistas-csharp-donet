@@ -263,11 +263,51 @@ int j = (int)o;      // unboxing
 
 ### Injeção de Dependência
 
+#### O que é Injeção de Dependência (Dependency Injection) no .NET?
+
+É um padrão de design onde as dependências são **injetadas externamente**, ao invés de serem criadas dentro da classe.
+
+**Benefícios:**
+- Código mais desacoplado  
+- Maior testabilidade  
+- Facilita manutenção e evolução  
+
 #### Tipos de Ciclo de Vida:
 
 - **AddSingleton**: Inicia com a aplicação e morre com ela
 - **AddScoped**: Instancia a cada **requisição** (ideal para banco de dados)
 - **AddTransient**: Nova instância a cada chamada da abstração
+
+### O que é async / await?
+
+Permite escrever código **assíncrono e não-bloqueante**, mantendo a leitura simples e sequencial.
+
+**Benefícios:**
+- Melhor performance
+- Não bloqueia a thread principal
+- Ideal para I/O (banco de dados, APIs, arquivos)
+
+### Qual a diferença entre Task e Thread?
+
+- **Thread** é de nível de sistema operacional
+- **Task** é uma abstração de mais alto nível, gerenciada pelo **Thread Pool do .NET**
+
+**Resumo:**  
+`Task` é mais eficiente, escalável e recomendada para programação assíncrona moderna.
+
+### O que é Middleware no ASP.NET Core?
+
+Middleware é um componente que **processa requisições e respostas HTTP** dentro de um pipeline.
+
+**Exemplos comuns:**
+- Autenticação
+- Logging
+- Tratamento de exceções
+
+**Cada middleware pode:**
+- Processar a requisição
+- Encerrar o pipeline
+- Ou passar para o próximo middleware
 
 ### Collections e LINQ
 
