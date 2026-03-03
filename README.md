@@ -339,6 +339,532 @@ var lista = produtos.ToList();
 - **ICollection**: Permite **contar** quantos itens  
 - **IList**: Permite **inserir/remover** itens em qualquer posição e buscar por índice
 
+### Threads e Concorrência
+
+#### Thread vs Task vs ThreadPool
+
+```csharp
+// Thread - controle manual, pesado
+Thread t = new Thread(() => Console.WriteLine("Thread!"));
+t.Start();
+
+// ThreadPool - pool gerenciado pelo runtime
+ThreadPool.QueueUserWorkItem(_ => Console.WriteLine("Pool!"));
+
+// Task - abstração moderna sobre ThreadPool
+Task.Run(() => Console.WriteLine("Task!"));
+```
+
+**Resumo:**
+- **Thread**: Cria thread do SO, caro em memória (~1MB stack cada). Use quando precisa de controle fino (prioridade, foreground/background).
+- **ThreadPool**: Pool de threads reutilizáveis, gerenciado pelo CLR. Evita custo de criar/destruir threads.
+- **Task**: Wrapper sobre ThreadPool com suporte a `async/await`, continuações, cancelamento e tratamento de exceções.
+
+#### Problemas de Concorrência
+
+**Race Condition:** duas threads acessam/modificam o mesmo recurso simultaneamente.
+
+```csharp
+// PROBLEMA - Race Condition
+int contador = 0;
+Parallel.For(0, 1000, _ => contador++); // resultado imprevisível!
+
+// SOLUÇÃO 1 - lock
+object lockObj = new object();
+Parallel.For(0, 1000, _ => { lock(lockObj) { contador++; } });
+
+// SOLUÇÃO 2 - Interlocked (mais performático para operações simples)
+Parallel.For(0, 1000, _ => Interlocked.Increment(ref contador));
+```
+
+#### Deadlock
+
+Acontece quando **duas threads ficam esperando uma pela outra** infinitamente.
+
+```csharp
+// EXEMPLO CLÁSSICO DE DEADLOCK
+object lock1 = new(), lock2 = new();
+
+Task.Run(() => { lock(lock1) { lock(lock2) { /* ... */ } } });
+Task.Run(() => { lock(lock2) { lock(lock1) { /* ... */ } } }); // DEADLOCK!
+```
+
+**Como evitar:** sempre adquirir locks na **mesma ordem** em todas as threads.
+
+#### CancellationToken
+
+Mecanismo padrão do .NET para **cancelar operações assíncronas de forma cooperativa**.
+
+```csharp
+var cts = new CancellationTokenSource();
+cts.CancelAfter(TimeSpan.FromSeconds(5)); // timeout de 5s
+
+async Task ProcessarAsync(CancellationToken token)
+{
+    while (!token.IsCancellationRequested)
+    {
+        await Task.Delay(100, token);
+        // trabalho...
+    }
+}
+```
+
+**Ponto de entrevista:** O cancelamento é **cooperativo** — o código precisa verificar o token. Não mata a thread à força.
+
+---
+
+### Garbage Collector (GC)
+
+#### Como funciona?
+
+O GC é o sistema de **gerenciamento automático de memória** do .NET. Ele libera objetos que **não têm mais referências** apontando para eles.
+
+#### Gerações do GC
+
+```
+Gen 0 → Objetos recém-criados (coleta frequente, rápida)
+Gen 1 → Sobreviveram a 1 coleta (buffer entre Gen 0 e Gen 2)
+Gen 2 → Objetos de longa vida (coleta rara, cara)
+```
+
+**Lógica:** A maioria dos objetos morre jovem (Gen 0). Se sobrevive, provavelmente vai durar bastante → promove para próxima geração.
+
+#### IDisposable e using
+
+Para **recursos não-gerenciados** (conexões de banco, arquivos, sockets), o GC **não sabe limpar**. Você precisa fazer manualmente:
+
+```csharp
+// Padrão moderno - using declaration
+using var connection = new SqlConnection(connString);
+// connection.Dispose() é chamado automaticamente ao sair do escopo
+
+// Padrão clássico - using statement
+using (var reader = new StreamReader("arquivo.txt"))
+{
+    var conteudo = reader.ReadToEnd();
+} // Dispose() chamado aqui
+```
+
+#### Finalizer vs Dispose
+
+- **Dispose()**: Chamado explicitamente pelo dev (determinístico)
+- **Finalizer (~Classe)**: Chamado pelo GC (não-determinístico, mais lento)
+
+```csharp
+public class MinhaClasse : IDisposable
+{
+    private bool _disposed = false;
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            // Liberar recursos não-gerenciados
+            _disposed = true;
+            GC.SuppressFinalize(this); // evita finalizer desnecessário
+        }
+    }
+
+    ~MinhaClasse() => Dispose(); // safety net
+}
+```
+
+**Ponto de entrevista:** Sempre prefira `Dispose()` com `using`. Finalizer é apenas **rede de segurança**.
+
+#### Memory Leak em .NET — "Mas não tem GC?"
+
+Sim, mas ainda pode ter **leaks lógicos**:
+- **Event handlers** não removidos (objeto publisher mantém referência ao subscriber)
+- **Objetos estáticos** que acumulam dados
+- **Closures** que capturam referências sem querer
+- **Cache sem política de expiração**
+
+---
+
+### Tratamento de Exceções
+
+#### Hierarquia de Exceções
+
+```
+System.Exception
+├── System.SystemException (exceções do runtime)
+│   ├── NullReferenceException
+│   ├── IndexOutOfRangeException
+│   ├── InvalidOperationException
+│   ├── ArgumentException
+│   │   └── ArgumentNullException
+│   └── StackOverflowException (não capturável!)
+└── System.ApplicationException (exceções custom - evitar herdar daqui)
+```
+
+#### Try / Catch / Finally / When
+
+```csharp
+try
+{
+    var resultado = await httpClient.GetAsync(url);
+}
+catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+{
+    // Filtro de exceção (when) - só entra aqui se for 404
+    logger.LogWarning("Recurso não encontrado");
+}
+catch (HttpRequestException ex)
+{
+    // Outros erros HTTP
+    logger.LogError(ex, "Erro HTTP");
+}
+catch (Exception ex)
+{
+    // Catch genérico - SEMPRE por último
+    logger.LogError(ex, "Erro inesperado");
+    throw; // re-throw mantendo stack trace original
+}
+finally
+{
+    // SEMPRE executa (com ou sem exceção)
+    // Ideal para cleanup
+}
+```
+
+#### throw vs throw ex
+
+```csharp
+catch (Exception ex)
+{
+    throw;    // ✅ Mantém o stack trace original
+    throw ex; // ❌ Reseta o stack trace (perde informação de onde originou)
+}
+```
+
+#### Exceções Customizadas
+
+```csharp
+public class BusinessException : Exception
+{
+    public string ErrorCode { get; }
+    
+    public BusinessException(string message, string errorCode) 
+        : base(message)
+    {
+        ErrorCode = errorCode;
+    }
+}
+```
+
+**Ponto de entrevista:** Nunca use exceções para **fluxo de controle**. Exceções são para situações **excepcionais**. Para validações, prefira retornar Result/Error objects.
+
+---
+
+### HTTP Pipeline e Middleware (Detalhado)
+
+#### Ordem do Pipeline
+
+```
+Requisição HTTP →
+  1. ExceptionHandler (captura erros de tudo abaixo)
+  2. HSTS / HTTPS Redirection
+  3. Static Files
+  4. Routing (resolve qual endpoint)
+  5. CORS
+  6. Authentication (quem é você?)
+  7. Authorization (você pode?)
+  8. Custom Middlewares
+  9. Endpoint (Controller/MinimalAPI)
+← Resposta HTTP (volta na ordem inversa)
+```
+
+**A ordem importa!** Authentication antes de Authorization. ExceptionHandler no topo para capturar tudo.
+
+#### Criando Middleware Customizado
+
+```csharp
+public class RequestTimingMiddleware
+{
+    private readonly RequestDelegate _next;
+
+    public RequestTimingMiddleware(RequestDelegate next) => _next = next;
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        var sw = Stopwatch.StartNew();
+        
+        await _next(context); // chama o próximo middleware
+        
+        sw.Stop();
+        context.Response.Headers.Add("X-Response-Time", $"{sw.ElapsedMilliseconds}ms");
+    }
+}
+
+// Registro em Program.cs
+app.UseMiddleware<RequestTimingMiddleware>();
+```
+
+#### Filtros vs Middleware
+
+- **Middleware**: Opera no **pipeline HTTP inteiro** (antes do routing)
+- **Filtros**: Operam **dentro do MVC** (após routing, mais granular)
+
+```
+Middleware → Routing → [Action Filters → Controller → Result Filters]
+```
+
+Tipos de filtros: Authorization, Resource, Action, Exception, Result.
+
+---
+
+### Design Patterns Comuns em Entrevista
+
+#### Repository Pattern
+
+Abstrai o acesso a dados. O Service não sabe se é SQL, Mongo, ou API.
+
+```csharp
+public interface IProdutoRepository
+{
+    Task<Produto?> GetByIdAsync(int id);
+    Task<IEnumerable<Produto>> GetAllAsync();
+    Task AddAsync(Produto produto);
+}
+```
+
+#### Unit of Work
+
+Garante que **múltiplas operações** no banco são commitadas (ou revertidas) **juntas**.
+
+```csharp
+public interface IUnitOfWork : IDisposable
+{
+    IProdutoRepository Produtos { get; }
+    IPedidoRepository Pedidos { get; }
+    Task<int> CommitAsync();
+}
+```
+
+#### Factory Pattern
+
+Encapsula a lógica de **criação** de objetos.
+
+```csharp
+public static class NotificacaoFactory
+{
+    public static INotificacao Criar(string tipo) => tipo switch
+    {
+        "email" => new EmailNotificacao(),
+        "sms"   => new SmsNotificacao(),
+        "push"  => new PushNotificacao(),
+        _       => throw new ArgumentException($"Tipo desconhecido: {tipo}")
+    };
+}
+```
+
+---
+
+### Structs vs Classes
+
+| Aspecto | Struct | Class |
+|---------|--------|-------|
+| Tipo | Valor (stack) | Referência (heap) |
+| Herança | Não suporta | Suporta |
+| Default | Não pode ter construtor sem parâmetros (antes C#10) | Pode |
+| Ideal para | Objetos pequenos e imutáveis (Point, Color) | Objetos complexos |
+| Nullable | `int?` (Nullable<int>) | Já é nullable por padrão |
+
+---
+
+### Strings
+
+#### string vs StringBuilder
+
+```csharp
+// ❌ String é IMUTÁVEL - cada concatenação cria novo objeto
+string resultado = "";
+for (int i = 0; i < 10000; i++)
+    resultado += i.ToString(); // 10.000 objetos criados!
+
+// ✅ StringBuilder é MUTÁVEL - modifica o mesmo buffer
+var sb = new StringBuilder();
+for (int i = 0; i < 10000; i++)
+    sb.Append(i);
+string resultado = sb.ToString(); // 1 objeto
+```
+
+#### String Interpolation e Verbatim
+
+```csharp
+var nome = "José";
+var msg = $"Olá, {nome}!";              // interpolação
+var path = @"C:\Users\jose\docs";        // verbatim (ignora escape)
+var multi = $@"Olá {nome},
+caminho: C:\Users";                      // combinados
+```
+
+---
+
+### Records (C# 9+)
+
+**Tipo imutável** por padrão, com igualdade por **valor** (não por referência).
+
+```csharp
+public record Pessoa(string Nome, int Idade);
+
+var p1 = new Pessoa("José", 30);
+var p2 = new Pessoa("José", 30);
+
+Console.WriteLine(p1 == p2);       // true! (compara por valor)
+Console.WriteLine(p1.Equals(p2));  // true!
+
+// with - cria cópia com modificação
+var p3 = p1 with { Idade = 31 };
+```
+
+**Quando usar:** DTOs, Value Objects, respostas de API — qualquer objeto que represente **dados imutáveis**.
+
+---
+
+### Generics
+
+```csharp
+// Método genérico
+public T Max<T>(T a, T b) where T : IComparable<T>
+    => a.CompareTo(b) >= 0 ? a : b;
+
+// Classe genérica
+public class Result<T>
+{
+    public bool Success { get; init; }
+    public T? Data { get; init; }
+    public string? Error { get; init; }
+
+    public static Result<T> Ok(T data) => new() { Success = true, Data = data };
+    public static Result<T> Fail(string error) => new() { Success = false, Error = error };
+}
+```
+
+#### Constraints comuns
+
+- `where T : class` → deve ser tipo referência
+- `where T : struct` → deve ser tipo valor
+- `where T : new()` → deve ter construtor sem parâmetros
+- `where T : IMinhaInterface` → deve implementar interface
+
+---
+
+### Delegates, Events e Lambdas
+
+#### Delegate
+
+É um **ponteiro para função** type-safe.
+
+```csharp
+// Delegates built-in do .NET
+Func<int, int, int> soma = (a, b) => a + b;     // tem retorno
+Action<string> log = msg => Console.WriteLine(msg); // sem retorno
+Predicate<int> ehPar = n => n % 2 == 0;           // retorna bool
+```
+
+#### Events
+
+Implementam o padrão **Observer** (publisher/subscriber):
+
+```csharp
+public class Pedido
+{
+    public event EventHandler<string>? PedidoCriado;
+    
+    public void Criar()
+    {
+        // lógica...
+        PedidoCriado?.Invoke(this, "Pedido #123 criado");
+    }
+}
+```
+
+**Ponto de entrevista:** Lembre de **remover event handlers** (`-=`) para evitar memory leaks.
+
+---
+
+### Nullable Reference Types (C# 8+)
+
+```csharp
+#nullable enable
+
+string nome = null;   // ⚠️ Warning: possível null
+string? nome = null;  // ✅ Explicitamente nullable
+
+// Null-conditional e Null-coalescing
+var tamanho = nome?.Length ?? 0;  // se nome for null, retorna 0
+
+// Null-forgiving (eu sei que não é null)
+var tamanho = nome!.Length;  // suprime o warning (use com cuidado!)
+```
+
+---
+
+### Span<T> e Memory<T> (Performance)
+
+```csharp
+// Span evita alocações desnecessárias ao fatiar arrays
+int[] numeros = { 1, 2, 3, 4, 5 };
+Span<int> slice = numeros.AsSpan(1, 3); // {2, 3, 4} sem copiar!
+
+// Útil para parsing de strings sem alocar
+ReadOnlySpan<char> texto = "2024-01-15".AsSpan();
+var ano = int.Parse(texto[..4]);   // parse sem criar substring
+```
+
+**Quando usar:** Cenários de **alta performance** onde alocações importam (parsers, processamento de dados em bulk).
+
+---
+
+### Testes Unitários
+
+#### Estrutura AAA (Arrange, Act, Assert)
+
+```csharp
+[Fact]
+public void Calcular_Desconto_DeveRetornar10Porcento()
+{
+    // Arrange
+    var service = new DescontoService();
+    var valorOriginal = 100m;
+
+    // Act
+    var resultado = service.Calcular(valorOriginal, percentual: 10);
+
+    // Assert
+    Assert.Equal(90m, resultado);
+}
+```
+
+#### Mocking com Moq
+
+```csharp
+[Fact]
+public async Task CriarPedido_DeveNotificarCliente()
+{
+    // Arrange
+    var mockNotificacao = new Mock<INotificacaoService>();
+    var service = new PedidoService(mockNotificacao.Object);
+
+    // Act
+    await service.CriarAsync(new Pedido());
+
+    // Assert
+    mockNotificacao.Verify(
+        n => n.EnviarAsync(It.IsAny<string>()), 
+        Times.Once);
+}
+```
+
+---
+
+### Minimal APIs vs Controllers
+#### Quando usar cada um?
+
+- **Minimal API**: Microsserviços, APIs simples, protótipos rápidos
+- **Controllers**: APIs maiores, quando precisa de filtros, model binding complexo, convenções MVC
+
 ---
 
 ## Banco de Dados
